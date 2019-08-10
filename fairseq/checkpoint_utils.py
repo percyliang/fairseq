@@ -26,6 +26,8 @@ def save_checkpoint(args, trainer, epoch_itr, val_loss):
     if val_loss is not None:
         best_function = max if args.maximize_best_checkpoint_metric else min
         save_checkpoint.best = best_function(val_loss, prev_best)
+        if val_loss == save_checkpoint.best:  # Save the best epoch too
+            save_checkpoint.best_epoch = epoch_itr.epoch
 
     if args.no_save or not distributed_utils.is_master(args):
         return

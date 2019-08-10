@@ -7,11 +7,15 @@
 Translate pre-processed data with a trained model.
 """
 
+import json
 import torch
 
 from fairseq import bleu, checkpoint_utils, options, progress_bar, tasks, utils
 from fairseq.meters import StopwatchMeter, TimeMeter
 
+def write_json(data, path):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
 
 def main(args):
     assert args.path is not None, '--path required for generation!'
@@ -25,6 +29,7 @@ def main(args):
     if args.max_tokens is None and args.max_sentences is None:
         args.max_tokens = 12000
     print(args)
+    write_json(vars(args), 'generate-args.json')
 
     use_cuda = torch.cuda.is_available() and not args.cpu
 
@@ -88,6 +93,9 @@ def main(args):
     else:
         scorer = bleu.Scorer(tgt_dict.pad(), tgt_dict.eos(), tgt_dict.unk())
     num_sentences = 0
+    num_exact_match_sentences = 0  # Exact match
+    num_oracle_exact_match_sentences = 0  # Exact match in nbest
+    predictions_out = open('generate-predictions.jsonl', 'w')
     has_target = True
     with progress_bar.build_progress_bar(args, itr) as t:
         wps_meter = TimeMeter()
@@ -114,6 +122,10 @@ def main(args):
                 if has_target:
                     target_tokens = utils.strip_pad(sample['target'][i, :], tgt_dict.pad()).int().cpu()
 
+                prediction = {
+                    'sample_id': sample_id,
+                }
+
                 # Either retrieve the original sentences or regenerate them from tokens.
                 if align_dict is not None:
                     src_str = task.dataset(args.gen_subset).src.get_original_text(sample_id)
@@ -129,10 +141,14 @@ def main(args):
                 if not args.quiet:
                     if src_dict is not None:
                         print('S-{}\t{}'.format(sample_id, src_str))
+                        prediction['source_str'] = src_str
                     if has_target:
                         print('T-{}\t{}'.format(sample_id, target_str))
+                        prediction['target_str'] = target_str
 
                 # Process top predictions
+                prediction['hypotheses'] = hypotheses = []
+                exact_match = False
                 for j, hypo in enumerate(hypos[i][:args.nbest]):
                     hypo_tokens, hypo_str, alignment = utils.post_process_prediction(
                         hypo_tokens=hypo['tokens'].int().cpu(),
@@ -142,6 +158,13 @@ def main(args):
                         tgt_dict=tgt_dict,
                         remove_bpe=args.remove_bpe,
                     )
+
+                    exact_match = (target_str == hypo_str)
+                    hypotheses.append({
+                        'score': hypo['score'],
+                        'str': hypo_str,
+                        'exact_match': exact_match,
+                    })
 
                     if not args.quiet:
                         print('H-{}\t{}\t{}'.format(sample_id, hypo['score'], hypo_str))
@@ -169,14 +192,31 @@ def main(args):
                         else:
                             scorer.add(target_tokens, hypo_tokens)
 
+                prediction['exact_match'] = len(hypotheses) > 0 and hypotheses[0]['exact_match']
+                prediction['oracle_exact_match'] = any(h['exact_match'] for h in hypotheses)
+                if prediction['exact_match']:
+                    num_exact_match_sentences += 1
+                if prediction['oracle_exact_match']:
+                    num_oracle_exact_match_sentences += 1
+                print(json.dumps(prediction), file=predictions_out)
+
             wps_meter.update(num_generated_tokens)
             t.log({'wps': round(wps_meter.avg)})
             num_sentences += sample['nsentences']
 
+    predictions_out.close()
     print('| Translated {} sentences ({} tokens) in {:.1f}s ({:.2f} sentences/s, {:.2f} tokens/s)'.format(
         num_sentences, gen_timer.n, gen_timer.sum, num_sentences / gen_timer.sum, 1. / gen_timer.avg))
     if has_target:
         print('| Generate {} with beam={}: {}'.format(args.gen_subset, args.beam, scorer.result_string()))
+    stats = {
+        'num_sentences': num_sentences,
+        'tokens_per_second': 1. / gen_timer.avg,
+        'exact_match': 1. * num_exact_match_sentences / num_sentences,
+        'oracle_exact_match': 1. * num_oracle_exact_match_sentences / num_sentences,
+        'bleu': scorer.score(),
+    }
+    write_json(stats, 'generate-stats.json')
     return scorer
 
 

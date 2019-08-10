@@ -10,14 +10,32 @@ Train a new model on one or across multiple GPUs.
 import collections
 import math
 import random
+import os
+import json
 
 import torch
 
 from fairseq import checkpoint_utils, distributed_utils, options, progress_bar, tasks, utils
 from fairseq.data import iterators
 from fairseq.trainer import Trainer
-from fairseq.meters import AverageMeter, StopwatchMeter
+from fairseq.meters import AverageMeter, StopwatchMeter, TimeMeter
 
+def write_json(data, path):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def serialize_stats(stats):
+    def serialize_value(v):
+        if isinstance(v, AverageMeter):
+            return {'avg': v.avg, 'count': v.count}
+        if isinstance(v, StopwatchMeter):
+            return {'avg': v.avg, 'n': v.n}
+        if isinstance(v, TimeMeter):
+            return {'avg': v.avg, 'n': v.n}
+        if isinstance(v, bool) or isinstance(v, int) or isinstance(v, float) or isinstance(v, str):
+            return v
+        return '<' + type(v) + '>'  # Can't serialize
+    return dict((k, serialize_value(v)) for k, v in stats.items())
 
 def main(args, init_distributed=False):
     utils.import_user_module(args)
@@ -37,6 +55,7 @@ def main(args, init_distributed=False):
 
     # Print args
     print(args)
+    write_json(vars(args), os.path.join(args.save_dir, 'train-args.json'))
 
     # Setup task, e.g., translation, language modeling, etc.
     task = tasks.setup_task(args)
@@ -153,6 +172,7 @@ def train(args, trainer, task, epoch_itr):
 
     # log end-of-epoch stats
     stats = get_training_stats(trainer)
+    write_json(serialize_stats(dict(stats, **{'epoch': epoch_itr.epoch})), os.path.join(args.save_dir, 'train-stats.json'))
     for k, meter in extra_meters.items():
         stats[k] = meter.avg
     progress.print(stats, tag='train', step=stats['num_updates'])
@@ -234,6 +254,7 @@ def validate(args, trainer, task, epoch_itr, subsets):
 
         # log validation stats
         stats = get_valid_stats(trainer, args, extra_meters)
+        write_json(serialize_stats(dict(stats, **{'epoch': epoch_itr.epoch})), os.path.join(args.save_dir, 'valid-stats.json'))
         for k, meter in extra_meters.items():
             stats[k] = meter.avg
         progress.print(stats, tag=subset, step=trainer.get_num_updates())
@@ -274,6 +295,8 @@ def get_valid_stats(trainer, args, extra_meters=None):
             checkpoint_utils.save_checkpoint.best,
             current_metric,
         )
+        if hasattr(checkpoint_utils.save_checkpoint, 'best_epoch'):
+            stats[key + '_epoch'] = checkpoint_utils.save_checkpoint.best_epoch
     return stats
 
 

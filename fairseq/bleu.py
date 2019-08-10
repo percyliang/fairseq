@@ -7,15 +7,16 @@ import ctypes
 import math
 import torch
 
-try:
-    from fairseq import libbleu
-except ImportError as e:
-    import sys
-    sys.stderr.write('ERROR: missing libbleu.so. run `pip install --editable .`\n')
-    raise e
-
-
-C = ctypes.cdll.LoadLibrary(libbleu.__file__)
+# Doesn't work in CodaLab when you do `pip install --editable fairseq --user`.
+#try:
+#    from fairseq import libbleu
+#except ImportError as e:
+#    import sys
+#    sys.stderr.write('ERROR: missing libbleu.so. run `pip install --editable .`\n')
+#    raise e
+#
+#
+#C = ctypes.cdll.LoadLibrary(libbleu.__file__)
 
 
 class BleuStat(ctypes.Structure):
